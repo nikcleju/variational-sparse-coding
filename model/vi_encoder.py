@@ -55,12 +55,12 @@ class VIEncoder(nn.Module):
             for _ in range(self.num_ISTA):
                 ISTA_lambda_prior_alpha.append(nn.Linear(dict_size, solver_args.ISTA_c_prior_size))
                 ISTA_lambda_prior_beta.append(nn.Linear(dict_size, solver_args.ISTA_c_prior_size))
+            self.ISTA_lambda_prior_alpha = nn.ModuleList(ISTA_lambda_prior_alpha)
+            self.ISTA_lambda_prior_beta  = nn.ModuleList(ISTA_lambda_prior_beta)
 
             self.ISTA_c_prior_alpha = nn.Linear(dict_size, solver_args.ISTA_c_prior_size)
             self.ISTA_c_prior_beta = nn.Linear(dict_size, solver_args.ISTA_c_prior_size)
 
-            self.ISTA_lambda_prior_alpha = nn.ModuleList(ISTA_lambda_prior_alpha)
-            self.ISTA_lambda_prior_beta  = nn.ModuleList(ISTA_lambda_prior_beta)
 
         if self.solver_args.prior_distribution == "laplacian":
             self.warmup = 0.1

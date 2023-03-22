@@ -50,14 +50,15 @@ def arrange_dict_similar(dict, reference, normalize=True, scale=True):
     return new_dict
 
 # Nic
-def save_dict_fast(phi, filename):
+def save_dict_fast(phi, filename, sort_by_norm=False):
     """
     Fast save figure for dictionary, using OpenCV instead of matplotlib.
 
     :param phi: Dictionary. Dimensions expected as pixels x num atoms
     :param filename: File to save
+    :param sort_by_norm: Sort atoms by descending norm or not
     """
-    dict_mag = np.argsort(-1*np.linalg.norm(phi, axis=0))
+    dict_mag = np.argsort(-1*np.linalg.norm(phi, axis=0)) if sort_by_norm else range(phi.shape[1])
     num_atoms = phi.shape[1]
     patch_size = int(np.sqrt(phi.shape[0]))
     
