@@ -22,7 +22,8 @@ from matplotlib import pyplot as plt
 
 from utils.solvers import FISTA
 from utils.data_loader import load_whitened_images
-from utils.dict_plotting import show_dict
+from utils.dict_plotting import save_dict_fast
+from utils.util import dict_add_defaults
 from model.lista import VIEncoderLISTA, LISTA
 from model.vi_encoder import VIEncoder
 
@@ -46,12 +47,14 @@ def compute_statistics(run_path, train_args, solver_args):
     code_list = np.zeros((len(load_list), val_patches.shape[0], final_phi.shape[1]))
     recovered_dict = np.zeros((len(load_list), *final_phi.shape))
 
+    c_init = np.linalg.norm(final_phi, ord=2) ** 2
+
     for idx, method in enumerate(load_list):
         np.random.seed(train_args.seed)
         torch.manual_seed(train_args.seed)
         
         if solver_args.solver != 'FISTA':
-            encoder = VIEncoder(train_args.patch_size**2, train_args.dict_size, solver_args).to(default_device)
+            encoder = VIEncoder(train_args.patch_size**2, train_args.dict_size, solver_args, c_init=c_init).to(default_device)
             encoder.load_state_dict(torch.load(run_path  + f"/encoderstate_epoch{method}.pt")['model_state'])
             encoder.ramp_hyperparams()
 
@@ -97,7 +100,7 @@ def compute_statistics(run_path, train_args, solver_args):
         multi_info[idx] = drv.information_multi(discrete_codes, Alphabet_X=alphabet)
 
         recovered_dict[idx] = C_sr @ np.linalg.pinv(C_rr)
-        show_dict(C_sr @ np.linalg.pinv(C_rr), train_args.save_path + f"recovered_dict{method}.png")
+        save_dict_fast(C_sr @ np.linalg.pinv(C_rr), train_args.save_path + f"recovered_dict{method}.png")
 
         logging.info(f"Epoch {method}, multi-information: {multi_info[idx]:.3E}, % posterior collapse: {posterior_collapse[idx]:.2f}%," +\
                      f" % coeff collapse: {coeff_collapse[idx]:.2f}%")
@@ -116,6 +119,11 @@ if __name__ == "__main__":
         config_data = json.load(json_data)
     train_args = SimpleNamespace(**config_data['train'])
     solver_args = SimpleNamespace(**config_data['solver'])
+
+    # Nic
+    dict_add_defaults(train_args, solver_args)
+    train_args.save_path = args.run
+
     logging.basicConfig(filename=os.path.join(train_args.save_path, 'statistics.log'), 
                         filemode='w', level=logging.DEBUG)
     compute_statistics(args.run, train_args, solver_args)

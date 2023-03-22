@@ -7,6 +7,7 @@ applies a variational posterior to learn the sparse codes.
 @Created     11/01/21
 """
 import argparse
+import datetime
 import time
 import os
 import logging
@@ -17,13 +18,15 @@ import numpy as np
 import torch
 
 from compute_vsc_statistics import compute_statistics
-from utils.dict_plotting import show_dict
+from utils.dict_plotting import save_dict_fast, arrange_dict_similar
 from utils.solvers import FISTA, ADMM
 from model.vi_encoder import VIEncoder
 from model.util import estimate_rejection_stat
 from model.scheduler import CycleScheduler
 from utils.data_loader import load_whitened_images
 from utils.util import *
+
+from torch.profiler import profile, record_function, ProfilerActivity
 
 # Load arguments for training via config file input to CLI #
 parser = argparse.ArgumentParser(description='Variational Sparse Coding')
@@ -36,6 +39,19 @@ train_args = SimpleNamespace(**config_data['train'])
 solver_args = SimpleNamespace(**config_data['solver'])
 
 default_device = torch.device('cuda', train_args.device)
+
+#=================
+# Debug and profiling options
+do_profile = False
+torch.autograd.set_detect_anomaly(False)
+
+# profile_scheduler = torch.profiler.schedule(wait=1, warmup=1, active=2, repeat=1)
+# train_args.epochs = 4
+#=================
+
+# Add default for new parameters, if not specified
+dict_add_defaults(train_args, solver_args)
+
 if not os.path.exists(train_args.save_path):
     os.makedirs(train_args.save_path)
     print("Created directory for figures at {}".format(train_args.save_path))
@@ -59,6 +75,12 @@ if __name__ == "__main__":
 
     train_patches, val_patches = load_whitened_images(train_args, dictionary)
 
+    # Use Pytorch's Dataset classes
+    train_dataset = torch.utils.data.TensorDataset(torch.from_numpy(train_patches))
+    train_loader  = torch.utils.data.DataLoader(train_dataset, batch_size=train_args.batch_size, shuffle=True)
+    val_dataset = torch.utils.data.TensorDataset(torch.from_numpy(val_patches))
+    val_loader  = torch.utils.data.DataLoader(val_dataset,   batch_size=train_args.batch_size, shuffle=False)
+
     # INITIALIZE 
     if solver_args.solver == "VI":
         encoder = VIEncoder(train_args.patch_size**2, train_args.dict_size, solver_args).to(default_device)
@@ -81,6 +103,7 @@ if __name__ == "__main__":
 
     # Initialize empty arrays for tracking learning data
     dictionary_saved = np.zeros((train_args.epochs, *dictionary.shape))
+    dictionary_saved_arranged = np.zeros((train_args.epochs, *dictionary.shape))  # For nicer plots
     dictionary_use = np.zeros((train_args.epochs, train_args.dict_size))
     lambda_list = np.zeros((train_args.epochs, train_args.dict_size))
     coeff_true = np.zeros((train_args.epochs, train_args.batch_size, train_args.dict_size))
@@ -91,6 +114,20 @@ if __name__ == "__main__":
     val_iwae_loss, val_kl_loss = np.zeros(train_args.epochs), np.zeros(train_args.epochs)
     train_time = np.zeros(train_args.epochs)
 
+    # Start a profiler, if desired
+    if do_profile:
+        prof = torch.profiler.profile(
+            #schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+            schedule=profile_scheduler,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/myprofile'),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            with_flops=True,
+            with_modules=True
+            )
+        prof.start()
+
     # TRAIN MODEL #
     init_time = time.time()
     for j in range(train_args.epochs):
@@ -100,12 +137,15 @@ if __name__ == "__main__":
 
         epoch_loss = np.zeros(train_patches.shape[0] // train_args.batch_size)
         # Shuffle training data-set
-        shuffler = np.random.permutation(len(train_patches))
-        for i in range(train_patches.shape[0] // train_args.batch_size):
-            patches = train_patches[shuffler][i * train_args.batch_size:(i + 1) * train_args.batch_size].reshape(train_args.batch_size, -1).T
-            patch_idx = shuffler[i * train_args.batch_size:(i + 1) * train_args.batch_size]
-            patches_cu = torch.tensor(patches.T).float().to(default_device)
-            dict_cu = torch.tensor(dictionary, device=default_device).float()
+        for i, batch in enumerate(train_loader):
+            
+            patches = batch[0].reshape(train_args.batch_size, -1).T
+            patch_idx = None
+
+            patches_cu = patches.T.float().to(default_device)
+
+            # If requires_grad is False, the dictionary will NOT be updated until the end of an epoch
+            dict_cu = torch.tensor(dictionary, device=default_device, requires_grad=train_args.update_dict_every_step).float()
 
             # Infer coefficients
             if solver_args.solver == "FISTA":
@@ -121,6 +161,7 @@ if __name__ == "__main__":
             elif solver_args.solver == "VI":
                 iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patch_idx)
 
+                # Dictionary is NOT updated when dict_cu `requires_grad` is False (torch.tensor())
                 vi_opt.zero_grad()
                 iwae_loss.backward()
                 vi_opt.step()
@@ -147,7 +188,7 @@ if __name__ == "__main__":
                 dictionary /= np.sqrt(np.sum(dictionary ** 2, axis=0))
 
             # Calculate loss after gradient step
-            epoch_loss[i] = 0.5 * np.sum((patches - dictionary @ b_select) ** 2) + solver_args.lambda_ * np.sum(np.abs(b_select))
+            epoch_loss[i] = 0.5 * np.sum((patches.numpy() - dictionary @ b_select) ** 2) + solver_args.lambda_ * np.sum(np.abs(b_select))
             # Log which dictionary entries are used
             dict_use = np.count_nonzero(b_select, axis=1)
             dictionary_use[j] += dict_use / ((train_patches.shape[0] // train_args.batch_size))
@@ -174,10 +215,11 @@ if __name__ == "__main__":
         epoch_val_l1 = np.zeros(val_patches.shape[0] // train_args.batch_size)
         epoch_iwae_loss = np.zeros(val_patches.shape[0] // train_args.batch_size)
         epoch_kl_loss = np.zeros(val_patches.shape[0] // train_args.batch_size)
-        for i in range(val_patches.shape[0] // train_args.batch_size):
+
+        for i, batch in enumerate(val_loader):
             # Load next batch of validation patches
-            patches = val_patches[i * train_args.batch_size:(i + 1) * train_args.batch_size].reshape(train_args.batch_size, -1).T
-            patch_idx = np.arange(i * train_args.batch_size, (i + 1) * train_args.batch_size)
+            patches = batch[0].reshape(train_args.batch_size, -1).T
+            patches_idx = None
 
             # Infer coefficients
             if solver_args.solver == "FISTA":
@@ -188,17 +230,17 @@ if __name__ == "__main__":
                 b_hat = ADMM(dictionary, patches, tau=solver_args.lambda_)
             elif solver_args.solver == "VI":
                 with torch.no_grad():
-                    patches_cu = torch.tensor(patches.T).float().to(default_device)
+                    patches_cu = patches.T.float().to(default_device)
                     dict_cu = torch.tensor(dictionary, device=default_device).float()
-                    iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patch_idx)
+                    iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patches_idx)
                     sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()
                     b_select = b_cu[torch.arange(len(b_cu)), sample_idx]
                     b_hat = b_select.detach().cpu().numpy().T
-                    b_true = FISTA(dictionary, patches, tau=solver_args.lambda_)
+                    b_true = FISTA(dictionary, patches.numpy(), tau=solver_args.lambda_)
 
             # Compute and save loss
-            epoch_true_recon[i] = 0.5 * np.sum((patches - dictionary @ b_true) ** 2)
-            epoch_val_recon[i] = 0.5 * np.sum((patches - dictionary @ b_hat) ** 2)
+            epoch_true_recon[i] = 0.5 * np.sum((patches.numpy() - dictionary @ b_true) ** 2)
+            epoch_val_recon[i] = 0.5 * np.sum((patches.numpy() - dictionary @ b_hat) ** 2)
             epoch_true_l1[i] = np.sum(np.abs(b_true))
             epoch_val_l1[i] = np.sum(np.abs(b_hat))
             epoch_iwae_loss[i], epoch_kl_loss[i]  = iwae_loss, kl_loss.mean()
@@ -219,6 +261,11 @@ if __name__ == "__main__":
         else:
             lambda_list[j] = np.ones(train_args.dict_size) * -1
         dictionary_saved[j] = dictionary
+        # Arrange dictionary elements in a more consistent way, from one saved image to the next
+        if j != 0:
+            dictionary_saved_arranged[j] = arrange_dict_similar(dictionary_saved[j], dictionary_saved_arranged[j-1])
+        else:   
+            dictionary_saved_arranged[j] = dictionary_saved[j]
 
         if solver_args.debug:
             print_debug(train_args, b_true.T, b_hat.T)
@@ -230,7 +277,9 @@ if __name__ == "__main__":
             logging.info("FISTA total loss: {:.3E}".format(val_true_recon[j] + solver_args.lambda_ * val_true_l1[j]))
 
         if j < 10 or (j + 1) % train_args.save_freq == 0 or (j + 1) == train_args.epochs:
-            show_dict(dictionary, train_args.save_path + f"dictionary_epoch{j+1}.png")
+            # save_dict_fast(dictionary, train_args.save_path + f"dictionary_epoch{j+1}.png")
+            save_dict_fast(dictionary_saved_arranged[j], train_args.save_path + f"dictionary_epoch{j+1}.png")
+
             np.savez_compressed(train_args.save_path + f"train_savefile.npz",
                     phi=dictionary_saved, lambda_list=lambda_list, time=train_time,
                     train=train_loss, val_true_recon=val_true_recon, val_recon=val_recon, 
@@ -247,6 +296,12 @@ if __name__ == "__main__":
                                                                                                           val_recon[j] + solver_args.lambda_ * val_l1[j],
                                                                                                           epoch_time))
         logging.info("\n")
+
+        if do_profile:
+            prof.step()
+
+    if do_profile:
+        prof.stop()
 
     if train_args.compute_stats:
         compute_statistics(train_args.save_path, train_args, solver_args)

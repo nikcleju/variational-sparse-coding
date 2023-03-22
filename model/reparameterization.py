@@ -22,7 +22,17 @@ def compute_kl(solver_args, **kwargs):
         raise NotImplementedError
 
     if solver_args.threshold and solver_args.theshold_learn:
+        # Add lambda KL loss with a weight
         kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].lambda_kl_loss.repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
+
+        # Zero the elements for the unselected atoms, if configured
+        if solver_args.sparse_KL:
+            kl_loss[kwargs['oui_zero']] = 0
+
+        # Add KL losses for the ISTA layers
+        for i in range(kwargs['encoder'].num_ISTA):
+            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].ISTA_lambda_kl_loss[i].repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
+            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].ISTA_c_kl_loss[i].repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
 
     return kl_loss
 
@@ -33,9 +43,18 @@ def fixed_kl(solver_args, **params):
     scale_prior = torch.tensor(solver_args.spread_prior)
     logscale_prior = torch.log(scale_prior)
     if solver_args.prior_distribution == "laplacian":
+
+        # KL divergence between two Laplacians, Meyer 2021, Appendix A
         scale = torch.exp(params['logscale'])
+        # |mu|/b0 + log(b0/bk) - 1 
+        # + bk exp(|mu|/bl) / b0
         kl_loss = (params['shift'].abs() / scale_prior) + logscale_prior - params['logscale'] - 1
         kl_loss += (scale / scale_prior) * (-(params['shift'].abs() / scale)).exp()
+
+        # Nic: ignore KL divergence for unselected atoms, if configured
+        if solver_args.sparse_KL:
+            kl_loss[params['oui_zero']] = 0
+
     elif solver_args.prior_distribution == "gaussian":
         kl_loss = -0.5 * (1 + params['logscale'] - logscale_prior)
         kl_loss += 0.5 * ((params['shift'] ** 2) + (params['logscale']).exp()) / scale_prior
@@ -189,25 +208,89 @@ def sample_laplacian(shift, logscale, x, A, encoder, solver_args, idx=None):
     shift = shift.repeat(solver_args.num_samples, *torch.ones(shift.dim(), dtype=int)).transpose(1, 0)
     logscale = logscale.repeat(solver_args.num_samples, *torch.ones(logscale.dim(), dtype=int)).transpose(1, 0)
 
+    # Sample laplacian-distributed r.v. from uniform r.v., Connor 2020, Appendix A
     scale = torch.exp(logscale)
     u = torch.rand_like(logscale) - 0.5
+    # sample Laplacian random variables, mean=0, scale=scale
     eps = -scale * torch.sign(u) * torch.log((1.0-2.0*torch.abs(u)).clamp(min=1e-6)) 
+    
+    # Add mean
+    # Warmup: smaller variance first
     z = shift + eps * encoder.warmup
+    
+    # Note:
+    # x_hat = (z @ A.T)
+
+    # Apply soft-thresholding and then add mu
     if solver_args.threshold:
         if solver_args.estimator == "straight":
+            # Skip-through: forward pass with threshold, backwards pass with direct connection
+            # detach(): stop gradients flowing
+            z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
+            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
+            oui_zero = torch.where(z_thresh == 0)
+            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
+
+            # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
+            z = z + z_thresh - z.detach()
+
+        elif solver_args.estimator == "straight_ISTA":
+            # Skip-through: forward pass with threshold and ISTA, backwards pass with direct connection
+
             z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
             non_zero = torch.nonzero(z_thresh, as_tuple=True)  
             z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
-            z = z + z_thresh - z.detach()
-        else:
-            z_thresh = encoder.soft_threshold(eps*scale)
+
+            # Unroll a few ISTA iterations, VAE-based
+            for i in range(encoder.num_ISTA):
+                z_thresh = encoder.ISTA_layer_VAE(z_thresh, A, x, i)
+            
             non_zero = torch.nonzero(z_thresh, as_tuple=True)  
+            oui_zero = torch.where(z_thresh == 0)
+
+            # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
+            z = z + z_thresh - z.detach()
+
+        elif solver_args.estimator == "tanh":
+            # DRAFT
+            # Soft-thresholding based on tanh
+
+            #z_thresh = encoder.soft_threshold_tanh(eps * encoder.warmup)
+            #non_zero = torch.nonzero(z_thresh, as_tuple=True)
+            #z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
+            #z = encoder.soft_threshold_tanh_shift(eps * encoder.warmup, shift)
+            z = encoder.soft_threshold_tanh_shift(eps.detach() * encoder.warmup, shift.detach())
+            #z_thresh = encoder.soft_threshold_tanh(eps.detach() * encoder.warmup)
+            
+            z = z + z_thresh - z.detach()
+
+        elif solver_args.estimator == "tanh_then_shift_skipconn":
+            # DRAFT
+            # Soft-thresholding based on tanh, then add shift
+            z_thresh, non_zero, oui_zero = encoder.soft_threshold_tanh(eps.detach() * encoder.warmup)
+            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
+            z = z + z_thresh - z.detach()
+
+        else:
+            # Standard, no skip-through
+
+            # TODO: why eps * scale? scale already applied to eps
+            #z_thresh = encoder.soft_threshold(eps*scale)  !!!!
+            z_thresh = encoder.soft_threshold(eps)
+            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
+            oui_zero = torch.where(z_thresh == 0)
             z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
             z = z_thresh
     
+    # KL loss = for s and for lambda
     kl_loss = compute_kl(solver_args, x=x, z=(shift + eps), encoder=encoder, 
-                         logscale=logscale, shift=shift, idx=idx)
+                         logscale=logscale, shift=shift, idx=idx,
+                         oui_zero=oui_zero)
+    
     recon_loss = compute_recon_loss(x, z, A)
+
+    # Final loss = weighted losses of the J reconstructed samples 
+    # Methods: average, max like Fallah 2022, iwae = softmax weights
     weight, iwae_loss = compute_loss(z, recon_loss.mean(dim=-1), solver_args.kl_weight * kl_loss.sum(dim=-1), 
                                      encoder, solver_args.sample_method, idx)
                                      

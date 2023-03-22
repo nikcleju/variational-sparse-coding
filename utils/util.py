@@ -1,4 +1,6 @@
+import datetime
 import logging
+import os
 
 import numpy as np
 import torch
@@ -50,3 +52,26 @@ def build_coreset(solver_args, encoder, train_patches, default_device):
     else:
         raise NotImplementedError
     logging.info(f"...core-set succesfully built.")
+
+def dict_add_defaults(train_args, solver_args, date_path=True):
+    """Utility function to add new parameters with default values
+       for train_args and save_args, in case of newly added parameters
+    """
+
+    # Add new fields
+    if not hasattr(solver_args, 'sparse_KL'):
+        setattr(solver_args, 'sparse_KL', False)
+    if not hasattr(solver_args, 'num_ISTA'):
+        setattr(solver_args, 'num_ISTA', 0)
+    if not hasattr(solver_args, 'ISTA_c_prior_size'):
+        setattr(solver_args, 'ISTA_c_prior_size', 1)
+    if not hasattr(train_args, 'update_dict_every_step'):
+        setattr(train_args, 'update_dict_every_step', False)
+        
+
+    # Prepend current date and time to savepath
+    if date_path:
+        path_splits = train_args.save_path.split(os.sep)
+        path_splits[-2] = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S_") + path_splits[-2]
+        train_args.save_path = os.sep.join(path_splits)
+
