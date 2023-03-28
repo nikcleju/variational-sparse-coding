@@ -170,6 +170,8 @@ if __name__ == "__main__":
                 if solver_args.true_coeff and not train_args.fixed_dict:
                     b = FISTA(dictionary, patches, tau=solver_args.lambda_)
                 else:
+                    # Select a single spare code out of the J ones, according to weight
+                    # In their sampling method, only one is selected, use that
                     sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()
                     b_select = b_cu[torch.arange(len(b_cu)), sample_idx].detach().cpu().numpy().T
                     weight = weight.detach()
@@ -230,10 +232,11 @@ if __name__ == "__main__":
                 b_hat = ADMM(dictionary, patches, tau=solver_args.lambda_)
             elif solver_args.solver == "VI":
                 with torch.no_grad():
+                    # Run VI and get sparse codes
                     patches_cu = patches.T.float().to(default_device)
                     dict_cu = torch.tensor(dictionary, device=default_device).float()
                     iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patches_idx)
-                    sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()
+                    sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()  # Why?
                     b_select = b_cu[torch.arange(len(b_cu)), sample_idx]
                     b_hat = b_select.detach().cpu().numpy().T
                     b_true = FISTA(dictionary, patches.numpy(), tau=solver_args.lambda_)

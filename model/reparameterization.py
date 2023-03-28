@@ -29,11 +29,6 @@ def compute_kl(solver_args, **kwargs):
         if solver_args.sparse_KL:
             kl_loss[kwargs['oui_zero']] = 0
 
-        # Add KL losses for the ISTA layers
-        for i in range(kwargs['encoder'].num_ISTA):
-            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].ISTA_lambda_kl_loss[i].repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
-            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].ISTA_c_kl_loss[i].repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
-
     return kl_loss
 
 def fixed_kl(solver_args, **params):
@@ -232,43 +227,6 @@ def sample_laplacian(shift, logscale, x, A, encoder, solver_args, idx=None):
             z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
 
             # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
-            z = z + z_thresh - z.detach()
-
-        elif solver_args.estimator == "straight_ISTA":
-            # Skip-through: forward pass with threshold and ISTA, backwards pass with direct connection
-
-            z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
-            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
-            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
-
-            # Unroll a few ISTA iterations, VAE-based
-            for i in range(encoder.num_ISTA):
-                z_thresh = encoder.ISTA_layer_VAE(z_thresh, A, x, i)
-            
-            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
-            oui_zero = torch.where(z_thresh == 0)
-
-            # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
-            z = z + z_thresh - z.detach()
-
-        elif solver_args.estimator == "tanh":
-            # DRAFT
-            # Soft-thresholding based on tanh
-
-            #z_thresh = encoder.soft_threshold_tanh(eps * encoder.warmup)
-            #non_zero = torch.nonzero(z_thresh, as_tuple=True)
-            #z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
-            #z = encoder.soft_threshold_tanh_shift(eps * encoder.warmup, shift)
-            z = encoder.soft_threshold_tanh_shift(eps.detach() * encoder.warmup, shift.detach())
-            #z_thresh = encoder.soft_threshold_tanh(eps.detach() * encoder.warmup)
-            
-            z = z + z_thresh - z.detach()
-
-        elif solver_args.estimator == "tanh_then_shift_skipconn":
-            # DRAFT
-            # Soft-thresholding based on tanh, then add shift
-            z_thresh, non_zero, oui_zero = encoder.soft_threshold_tanh(eps.detach() * encoder.warmup)
-            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
             z = z + z_thresh - z.detach()
 
         else:

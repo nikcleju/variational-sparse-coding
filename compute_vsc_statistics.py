@@ -54,7 +54,7 @@ def compute_statistics(run_path, train_args, solver_args):
         torch.manual_seed(train_args.seed)
         
         if solver_args.solver != 'FISTA':
-            encoder = VIEncoder(train_args.patch_size**2, train_args.dict_size, solver_args, c_init=c_init).to(default_device)
+            encoder = VIEncoder(train_args.patch_size**2, train_args.dict_size, solver_args).to(default_device)
             encoder.load_state_dict(torch.load(run_path  + f"/encoderstate_epoch{method}.pt")['model_state'])
             encoder.ramp_hyperparams()
 
