@@ -2,6 +2,8 @@ import sys
 import logging
 sys.path.append('.')
 
+from contextlib import nullcontext
+
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -142,20 +144,32 @@ class VIEncoder(nn.Module):
         # Note:
         # x_hat = (z @ A.T)
 
-        c = c if c is not None else torch.abs(self.ISTA_c)
-        c = 3 #!!!!
+        c = c if c is not None else torch.abs(self.ISTA_c) + 1/self.warmup
         l = torch.abs(self.ISTA_lambda_[i] / c)
+        #l = torch.abs(self.ISTA_lambda_[i])
+        
+
+        # Use global lambda
+        #l = torch.abs(self.lambda_ / c)
 
         zout = self.soft_threshold_lambda(z - (1 / c) * z @ A.T @ A + (1 / c) * torch.matmul(y, A), l)      #   z = x = S( (I - 1/L D^T D) x + 1/L D^T y)
         norm1 = np.linalg.norm((y - z@A.T).cpu().detach().numpy())     # for debugging
         norm2 = np.linalg.norm((y - zout@A.T).cpu().detach().numpy())  # for debugging
         return zout
+    
+    def forward(self, x, decoder, idx=None, do_grad=True):
 
+        if not do_grad:
+            cm_no_grad = torch.no_grad()
+            cm_do_grad = torch.enable_grad()
+        else:
+            cm_no_grad = nullcontext()
+            cm_do_grad = nullcontext()
 
-    def forward(self, x, decoder, idx=None):
+        with cm_no_grad:
 
-        # Feature extraction 
-        feat = self.enc(x)
+            # Feature extraction 
+            feat = self.enc(x)
 
         # Parameters for base distribution of sparse coefficients
         b_logscale = self.scale(feat)
@@ -170,6 +184,9 @@ class VIEncoder(nn.Module):
                 gamma_pred = gamma.Gamma(alpha, beta)
                 gamma_prior = gamma.Gamma(3, (3 * torch.ones_like(beta)) / self.solver_args.threshold_lambda)
 
+                # Gamma distribution (shape, rate) = Gamma (shape, scale = 1/rate)
+                # Here: average value = alpha / beta = solver_args.threshold_lambda
+
                 # Parameters for the ISTA parameter distributions
                 ISTA_alpha = []
                 ISTA_beta = []
@@ -179,11 +196,13 @@ class VIEncoder(nn.Module):
                     ISTA_alpha.append( self.ISTA_lambda_prior_alpha[i](feat).exp().clip(1e-6, 1e6) )
                     ISTA_beta.append( self.ISTA_lambda_prior_beta[i](feat).exp().clip(1e-6, 1e6) )
                     ISTA_gamma_pred.append( gamma.Gamma(ISTA_alpha[i], ISTA_beta[i]) )
-                    ISTA_gamma_prior.append( gamma.Gamma(3, (3 * torch.ones_like(ISTA_beta[i])) / self.solver_args.threshold_lambda) )
+                    #ISTA_gamma_prior.append( gamma.Gamma(3, (3 * torch.ones_like(ISTA_beta[i])) / self.solver_args.threshold_lambda) )
+                    ISTA_gamma_prior.append(gamma.Gamma(3, (3 * torch.ones_like(ISTA_beta[i])) / (self.solver_args.threshold_lambda)) ) # Force bigger
                 ISTA_c_alpha = self.ISTA_c_prior_alpha(feat).exp().clip(1e-6, 1e6)
                 ISTA_c_beta  = self.ISTA_c_prior_beta(feat).exp().clip(1e-6, 1e6)
                 ISTA_c_pred  = gamma.Gamma(ISTA_c_alpha, ISTA_c_beta)
-                ISTA_c_prior = gamma.Gamma(3, (3 * torch.ones_like(ISTA_c_beta)) / self.solver_args.threshold_lambda)
+                #ISTA_c_prior = gamma.Gamma(3, (3 * torch.ones_like(ISTA_c_beta)) / self.solver_args.threshold_lambda)
+                ISTA_c_prior = gamma.Gamma(3, (3 * torch.ones_like(ISTA_c_beta)) / 100)
 
                 # Sample lambdas, and compute KL divergence term for lambda
                 # rasmple() makes the gradients flow to the parameters alpha and beta
@@ -202,15 +221,16 @@ class VIEncoder(nn.Module):
             else:
                 self.lambda_ = torch.ones_like(b_logscale) * self.solver_args.threshold_lambda
                 self.lambda_ = self.lambda_.repeat(self.solver_args.num_samples, 
-                                                   *torch.ones(self.lambda_.dim(), dtype=int)).transpose(1, 0)
+                                                *torch.ones(self.lambda_.dim(), dtype=int)).transpose(1, 0)
 
+        # with cm_do_grad:
 
         if self.solver_args.prior_distribution == "laplacian":
             iwae_loss, recon_loss, kl_loss, sparse_codes, weight = sample_laplacian(b_shift, b_logscale, x, decoder,
-                                                                 self, self.solver_args, idx=idx)
+                                                                self, self.solver_args, idx=idx)
         elif self.solver_args.prior_distribution == "gaussian":
             iwae_loss, recon_loss, kl_loss, sparse_codes, weight  = sample_gaussian(b_shift, b_logscale, x, decoder,
-                                                                 self, self.solver_args, idx=idx)
+                                                                self, self.solver_args, idx=idx)
         elif self.solver_args.prior_distribution == "concreteslab":
             logspike = -F.relu(-self.spike(feat))
             iwae_loss, recon_loss, kl_loss, sparse_codes, weight = sample_concreteslab(b_shift, b_logscale, logspike, x, decoder, 

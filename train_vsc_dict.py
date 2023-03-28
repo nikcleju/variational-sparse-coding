@@ -106,6 +106,7 @@ if __name__ == "__main__":
     dictionary_saved_arranged = np.zeros((train_args.epochs, *dictionary.shape))  # For nicer plots
     dictionary_use = np.zeros((train_args.epochs, train_args.dict_size))
     lambda_list = np.zeros((train_args.epochs, train_args.dict_size))
+    ISTA_lambda_list = np.zeros((solver_args.num_ISTA, train_args.epochs, train_args.dict_size))
     coeff_true = np.zeros((train_args.epochs, train_args.batch_size, train_args.dict_size))
     coeff_est = np.zeros((train_args.epochs, train_args.batch_size, train_args.dict_size))
     train_loss = np.zeros(train_args.epochs)
@@ -159,7 +160,10 @@ if __name__ == "__main__":
             elif solver_args.solver == "ADMM":
                 b = ADMM(dictionary, patches, tau=solver_args.lambda_)
             elif solver_args.solver == "VI":
-                iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patch_idx)
+                
+                # Nic
+                do_grad = True
+                iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patch_idx, do_grad=do_grad)
 
                 # Dictionary is NOT updated when dict_cu `requires_grad` is False (torch.tensor())
                 vi_opt.zero_grad()
@@ -170,6 +174,8 @@ if __name__ == "__main__":
                 if solver_args.true_coeff and not train_args.fixed_dict:
                     b = FISTA(dictionary, patches, tau=solver_args.lambda_)
                 else:
+                    # Select a single spare code out of the J ones, according to weight
+                    # In their sampling method, only one is selected, use that
                     sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()
                     b_select = b_cu[torch.arange(len(b_cu)), sample_idx].detach().cpu().numpy().T
                     weight = weight.detach()
@@ -188,7 +194,9 @@ if __name__ == "__main__":
                 dictionary /= np.sqrt(np.sum(dictionary ** 2, axis=0))
 
             # Calculate loss after gradient step
+            #epoch_loss[i] = 0.5 * np.sum((patches.numpy() - dictionary @ b_select) ** 2) + solver_args.lambda_ * np.sum(np.abs(b_select))
             epoch_loss[i] = 0.5 * np.sum((patches.numpy() - dictionary @ b_select) ** 2) + solver_args.lambda_ * np.sum(np.abs(b_select))
+
             # Log which dictionary entries are used
             dict_use = np.count_nonzero(b_select, axis=1)
             dictionary_use[j] += dict_use / ((train_patches.shape[0] // train_args.batch_size))
@@ -230,10 +238,11 @@ if __name__ == "__main__":
                 b_hat = ADMM(dictionary, patches, tau=solver_args.lambda_)
             elif solver_args.solver == "VI":
                 with torch.no_grad():
+                    # Run VI and get sparse codes
                     patches_cu = patches.T.float().to(default_device)
                     dict_cu = torch.tensor(dictionary, device=default_device).float()
                     iwae_loss, recon_loss, kl_loss, b_cu, weight = encoder(patches_cu, dict_cu, patches_idx)
-                    sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()
+                    sample_idx = torch.distributions.categorical.Categorical(weight).sample().detach()  # Why?
                     b_select = b_cu[torch.arange(len(b_cu)), sample_idx]
                     b_hat = b_select.detach().cpu().numpy().T
                     b_true = FISTA(dictionary, patches.numpy(), tau=solver_args.lambda_)
@@ -258,8 +267,13 @@ if __name__ == "__main__":
         coeff_est[j], coeff_true[j] = b_hat.T, b_true.T
         if solver_args.threshold and solver_args.solver == "VI":
             lambda_list[j] = encoder.lambda_.data.mean(dim=(0, 1)).cpu().numpy()
+            for iISTA, vals in enumerate(encoder.ISTA_lambda_):
+                ISTA_lambda_list[iISTA, j] = vals.data.mean(dim=(0, 1)).cpu().numpy()
         else:
             lambda_list[j] = np.ones(train_args.dict_size) * -1
+            for iISTA, vals in enumerate(encoder.ISTA_lambda_):
+                ISTA_lambda_list[iISTA, j] = np.ones(train_args.dict_size) * -1
+
         dictionary_saved[j] = dictionary
         # Arrange dictionary elements in a more consistent way, from one saved image to the next
         if j != 0:
@@ -270,6 +284,8 @@ if __name__ == "__main__":
         if solver_args.debug:
             print_debug(train_args, b_true.T, b_hat.T)
             logging.info("Mean lambda value: {:.3E}".format(lambda_list[j].mean()))
+            for iISTA in range(ISTA_lambda_list.shape[0]):
+                logging.info("Mean ISTA lambda value: {:.3E}".format(ISTA_lambda_list[iISTA,j].mean()))
             logging.info("Mean dict norm: {}".format(np.sqrt(np.sum(dictionary ** 2, axis=0)).mean()))
             logging.info("Est IWAE loss: {:.3E}".format(val_iwae_loss[j]))
             logging.info("Est KL loss: {:.3E}".format(val_kl_loss[j]))

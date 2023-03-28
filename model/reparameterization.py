@@ -238,15 +238,45 @@ def sample_laplacian(shift, logscale, x, A, encoder, solver_args, idx=None):
             # Skip-through: forward pass with threshold and ISTA, backwards pass with direct connection
 
             z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
-            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
-            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
+            non_zero = torch.nonzero(z_thresh, as_tuple=True)
+            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]   # maybe shift.detach()? since we have eps.detach()
+
+            # Unroll a few ISTA iterations, VAE-based
+            z_thresh_ISTA = z_thresh
+            for i in range(encoder.num_ISTA):
+                z_thresh_ISTA = encoder.ISTA_layer_VAE(z_thresh_ISTA, A, x, i, c=100)
+            
+            # Those of initial, or those of final z_thresh?
+            # Doesn't matter, not used
+            # Of final:
+            # non_zero_ISTA = torch.nonzero(z_thresh_ISTA, as_tuple=True)  
+            oui_zero_ISTA = torch.where(z_thresh_ISTA == 0)
+
+            # Replace
+            z_thresh = z_thresh_ISTA
+            # non_zero = non_zero_ISTA
+            oui_zero = oui_zero_ISTA
+
+            # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
+            z = z + z_thresh - z.detach()
+
+        elif solver_args.estimator == "straight_ISTA_eps":
+            # Skip-through: forward pass with threshold and ISTA, backwards pass with direct connection
+
+            z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
+            non_zero = torch.nonzero(z_thresh, as_tuple=True)
 
             # Unroll a few ISTA iterations, VAE-based
             for i in range(encoder.num_ISTA):
-                z_thresh = encoder.ISTA_layer_VAE(z_thresh, A, x, i)
-            
-            non_zero = torch.nonzero(z_thresh, as_tuple=True)  
+                z_mean = torch.zeros_like(z)
+                z_mean[non_zero] = shift[non_zero]
+                z_thresh = encoder.ISTA_layer_VAE(z_thresh, A, (x - z_mean @ A.T), i, c=20)
+                non_zero = torch.nonzero(z_thresh, as_tuple=True)
+
             oui_zero = torch.where(z_thresh == 0)
+
+            # Add mean
+            z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]   # maybe shift.detach()? since we have eps.detach()
 
             # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
             z = z + z_thresh - z.detach()

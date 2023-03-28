@@ -13,13 +13,14 @@
       "epochs": 300,
       "save_freq": 20,
       "save_path": "results/laplacian_learnthresh_20samp/",
-      "normalize": false,
+      "normalize": true,
+      "normalize_comment": "Originally false, changed to True",
       "fnorm_reg": 0.0001,
       "lr": 0.5,
       "lr_decay": 0.99,
       "compute_stats": true,
 
-      "update_dict_every_step": true,
+      "update_dict_every_step": false,
       "update_dict_every_step_comment": "Update the dictionary after every training step (true), or only at the end of an epoch (false)"
     },
     "solver": {
@@ -36,13 +37,14 @@
       "theshold_learn": true,
       "gamma_kl_weight": 1e-1,
       "prior_distribution": "laplacian",
-      "estimator": "straight_ISTA",
+      "estimator": "straight_ISTA_eps",
       "prior_method": "fixed",
       "spread_prior": 0.1,
       "kl_weight": 0.01,
-      "num_ISTA": 1,
+      "kl_weight_comment": "was 0.01, made ot 0.001",
+      "num_ISTA": 3,
       "num_ISTA_comment": "Number of ISTA iterations",
-      "ISTA_c_prior_size": 256,
+      "ISTA_c_prior_size": 1,
       "ISTA_c_prior_size_comment": "Output size of ISTA_c_prior Linear layer"
     }
   }
