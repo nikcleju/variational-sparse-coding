@@ -98,6 +98,14 @@ def load_whitened_images(train_args, dictionary):
     data_matlab = scipy.io.loadmat('./data/whitened_images.mat')
     images = np.ascontiguousarray(data_matlab['IMAGES'])
 
+    if train_args.patch_size == -1:
+        # No patches, full image
+        patch_sizes = (images.shape[0], images.shape[1])
+        reshape = False
+    else:
+        patch_sizes = (train_args.patch_size, train_args.patch_size)
+        reshape = True
+
     # Extract patches using SciKit-Learn. Out of 10 images, 8 are used for training and 2 are used for validation.
     data_file = f"data/imagepatches_{train_args.patch_size}_seed{train_args.seed}.npz"
     if os.path.exists(data_file):
@@ -105,8 +113,8 @@ def load_whitened_images(train_args, dictionary):
         data_patches, val_patches = data_file['data_patches'], data_file['val_patches']
         train_mean, train_std = data_file['train_mean'], data_file['train_std']
     else:
-        data_patches = np.moveaxis(extract_patches_2d(images, (train_args.patch_size, train_args.patch_size)), -1, 1). \
-                                   reshape(-1, train_args.patch_size, train_args.patch_size)
+        data_patches = np.moveaxis(extract_patches_2d(images, patch_sizes), -1, 1). \
+                                   reshape(-1, patch_sizes[0], patch_sizes[1])
         np.random.shuffle(data_patches)
         
         train_mean, train_std = np.mean(data_patches, axis=0), np.std(data_patches, axis=0)

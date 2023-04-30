@@ -1,6 +1,7 @@
 {
     "train": {
-      "device": [0, 1],
+      "device": [0],
+      "device_comment": "was [0,1] originally",
       "amp": true,
       "seed": 0,
       "train_samples": 150000,

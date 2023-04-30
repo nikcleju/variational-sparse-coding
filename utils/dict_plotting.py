@@ -6,6 +6,7 @@ Plotting utility functions for learned sparse dictionary.
 @Created     5/29/20
 """
 import matplotlib.animation as animation
+import math
 import numpy as np
 from matplotlib import pyplot as plt
 
@@ -23,6 +24,10 @@ def arrange_dict_similar(dict, reference, normalize=True, scale=True):
                 distances[i] = np.linalg.norm(x - dict[:,i], 2)
         
         return np.argmin(distances)
+
+    # Make copies!
+    dict = dict.copy()
+    reference = reference.copy()
 
     # Preprocess dictionaries
     if normalize:
@@ -50,7 +55,7 @@ def arrange_dict_similar(dict, reference, normalize=True, scale=True):
     return new_dict
 
 # Nic
-def save_dict_fast(phi, filename, sort_by_norm=False):
+def save_dict_fast(phi, filename, sort_by_norm=False, scale_factor=1):
     """
     Fast save figure for dictionary, using OpenCV instead of matplotlib.
 
@@ -63,15 +68,27 @@ def save_dict_fast(phi, filename, sort_by_norm=False):
     patch_size = int(np.sqrt(phi.shape[0]))
     
     grid_size = int(np.sqrt(num_atoms))
+
+    # Check if perfect square or not
+    if int(grid_size + 0.5) ** 2 == num_atoms:
+        # Perfect square
+        grid_rows = grid_size
+        grid_cols = grid_size
+    else:
+        # Not a perfect square
+        grid_rows = grid_size
+        grid_cols = math.ceil(num_atoms // grid_rows)
+
     border_size = 2
     border_color = 0
 
-    total_size = grid_size*(patch_size + border_size) - border_size
-    total_image = np.zeros((total_size, total_size)) + border_color
+    total_size_cols = grid_cols*(patch_size + border_size) - border_size
+    total_size_rows = grid_rows*(patch_size + border_size) - border_size
+    total_image = np.zeros((total_size_rows, total_size_cols)) + border_color
 
     for i in range(num_atoms):
-        grid_row  = i // grid_size
-        grid_col  = i % grid_size
+        grid_row  = i // grid_cols
+        grid_col  = i % grid_cols
 
         row_start = grid_row * (patch_size + border_size)
         col_start = grid_col * (patch_size + border_size)        
@@ -80,6 +97,9 @@ def save_dict_fast(phi, filename, sort_by_norm=False):
 
         total_image[row_start:row_stop, col_start:col_stop] = \
             minmax_scale(phi[:, dict_mag[i]], feature_range=(0,255)).reshape(patch_size, patch_size)
+
+    # Scale by a 2^n factor
+    total_image = np.kron(total_image, np.ones((scale_factor, scale_factor)))
 
     cv2.imwrite(filename, total_image)
 

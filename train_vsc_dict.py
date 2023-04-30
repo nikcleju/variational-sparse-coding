@@ -50,7 +50,7 @@ torch.autograd.set_detect_anomaly(False)
 #=================
 
 # Add default for new parameters, if not specified
-dict_add_defaults(train_args, solver_args)
+params_add_defaults(train_args, solver_args)
 
 if not os.path.exists(train_args.save_path):
     os.makedirs(train_args.save_path)
@@ -178,12 +178,23 @@ if __name__ == "__main__":
                     b = b_cu.permute(1, 2, 0).detach()
 
             # Take gradient step on dictionaries
-            generated_patch = dict_cu @ b
+            generated_patch = dict_cu @ b              # b.shape, generated_patch.shape = [20, 256, 100]
             residual = patches_cu.T - generated_patch
             #select_penalty = np.sqrt(np.sum(dictionary ** 2, axis=0)) > 1.5
+            # residual[:, :, None].shape
+            # torch.Size([20, 256, 1, 100])
+            # b[:,None].shape
+            # torch.Size([20, 1, 256, 100])  # outer product (residual * b.T) = 1/2 * d||AX-y||^2 / dA
+            # (residual[:, :, None] * b[:, None]).shape
+            # torch.Size([20, 256, 256, 100])
+            # weight[:,None, None].shape
+            # torch.Size([100, 1, 1, 20])
+            # ((residual[:, :, None] * b[:, None]) * weight.T[:, None, None]).shape
+            # torch.Size([20, 256, 256, 100])
             step = ((residual[:, :, None] * b[:, None]) * weight.T[:, None, None]).sum(axis=(0, 3)) / train_args.batch_size
             step = step.detach().cpu().numpy() -  2*train_args.fnorm_reg*dictionary#*select_penalty
             dictionary += step_size * step
+            # D = D + step_size * (dnorm/dD - 2*0.001*D) = 
             
             # Normalize dictionaries. Required to prevent unbounded growth, Tikhonov regularisation also possible.
             if train_args.normalize:
@@ -276,7 +287,9 @@ if __name__ == "__main__":
             logging.info("Mean dict norm: {}".format(np.sqrt(np.sum(dictionary ** 2, axis=0)).mean()))
             logging.info("Est IWAE loss: {:.3E}".format(val_iwae_loss[j]))
             logging.info("Est KL loss: {:.3E}".format(val_kl_loss[j]))
-            logging.info("Est total loss: {:.3E}".format(val_recon[j] + solver_args.lambda_ * val_l1[j]))
+            logging.info("Est validation recon loss: {:.3E}".format(val_recon[j]))
+            logging.info("Est validation l1 loss: {:.3E}".format(val_l1[j]))
+            logging.info("Est total loss = val_recon_loss + solver_args.lambda_ * val_l1_loss: {:.3E}".format(val_recon[j] + solver_args.lambda_ * val_l1[j]))
             logging.info("FISTA total loss: {:.3E}".format(val_true_recon[j] + solver_args.lambda_ * val_true_l1[j]))
 
         if j < 10 or (j + 1) % train_args.save_freq == 0 or (j + 1) == train_args.epochs:

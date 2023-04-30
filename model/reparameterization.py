@@ -23,12 +23,20 @@ def compute_kl(solver_args, **kwargs):
 
     if solver_args.threshold and solver_args.theshold_learn:
         # Add lambda KL loss with a weight
-        kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].lambda_kl_loss.repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
+        if len(kwargs['x'].shape) == 3:  
+            # Sparse Coding
+            #   lambda_kl_loss.shape  = [20, 256]
+            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].lambda_kl_loss.repeat(solver_args.num_samples, 1, 1).permute(1, 0, 2)
+        elif  len(kwargs['x'].shape) == 5:  
+            # Convolutional Sparse Coding
+            #   kwargs['x'].shape     = [100, 5, 1, 16, 16]) = [batch, numsamples, colors, patchsize, patchsize]
+            #   lambda_kl_loss.shape  = [100, 6, 16, 16]     = [batch, dict_size, patchsize, patchsize]
+            kl_loss += solver_args.gamma_kl_weight * kwargs['encoder'].lambda_kl_loss.repeat(solver_args.num_samples, 1, 1, 1, 1).permute(1, 0, 2, 3, 4)
+            #   kwargs['encoder'].lambda_kl_loss.repeat(solver_args.num_samples, 1, 1, 1, 1).permute(1, 0, 2, 3, 4).shape = [100, 5, 6, 16, 16]
 
-        # Zero the elements for the unselected atoms, if configured
-        if solver_args.sparse_KL:
-            kl_loss[kwargs['oui_zero']] = 0
-
+        else:
+            raise NotImplementedError
+        
     return kl_loss
 
 def fixed_kl(solver_args, **params):
@@ -45,10 +53,6 @@ def fixed_kl(solver_args, **params):
         # + bk exp(|mu|/bl) / b0
         kl_loss = (params['shift'].abs() / scale_prior) + logscale_prior - params['logscale'] - 1
         kl_loss += (scale / scale_prior) * (-(params['shift'].abs() / scale)).exp()
-
-        # Nic: ignore KL divergence for unselected atoms, if configured
-        if solver_args.sparse_KL:
-            kl_loss[params['oui_zero']] = 0
 
     elif solver_args.prior_distribution == "gaussian":
         kl_loss = -0.5 * (1 + params['logscale'] - logscale_prior)
@@ -223,7 +227,6 @@ def sample_laplacian(shift, logscale, x, A, encoder, solver_args, idx=None):
             # detach(): stop gradients flowing
             z_thresh = encoder.soft_threshold(eps.detach() * encoder.warmup)
             non_zero = torch.nonzero(z_thresh, as_tuple=True)  
-            oui_zero = torch.where(z_thresh == 0)
             z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
 
             # Skip connection: forward z = z_thresh, backward z = z + z_thresh (?)
@@ -236,21 +239,35 @@ def sample_laplacian(shift, logscale, x, A, encoder, solver_args, idx=None):
             #z_thresh = encoder.soft_threshold(eps*scale)  !!!!
             z_thresh = encoder.soft_threshold(eps)
             non_zero = torch.nonzero(z_thresh, as_tuple=True)  
-            oui_zero = torch.where(z_thresh == 0)
             z_thresh[non_zero] = shift[non_zero] + z_thresh[non_zero]
             z = z_thresh
     
     # KL loss = for s and for lambda
     kl_loss = compute_kl(solver_args, x=x, z=(shift + eps), encoder=encoder, 
-                         logscale=logscale, shift=shift, idx=idx,
-                         oui_zero=oui_zero)
+                         logscale=logscale, shift=shift, idx=idx)
     
     recon_loss = compute_recon_loss(x, z, A)
 
     # Final loss = weighted losses of the J reconstructed samples 
     # Methods: average, max like Fallah 2022, iwae = softmax weights
-    weight, iwae_loss = compute_loss(z, recon_loss.mean(dim=-1), solver_args.kl_weight * kl_loss.sum(dim=-1), 
-                                     encoder, solver_args.sample_method, idx)
+
+    # Nic: TODO: what is the last dimension -1 in normal Sparse Coding?
+    if len(recon_loss.shape) == 3:
+        # Sparse Coding
+        #   example: recon_loss.shape = [100,20,256] 
+        weight, iwae_loss = compute_loss(z, recon_loss.mean(dim=-1), solver_args.kl_weight * kl_loss.sum(dim=-1), 
+                                        encoder, solver_args.sample_method, idx)
+        #   weight.shape = [100, 20]
+    elif len(recon_loss.shape) == 5:
+        # Convolutional Sparse Coding
+        #   example: recon_loss.shape = [100,20, ?, 16,16] 
+        # Assume it is z size (e.g. 1, 512, 512 here)
+        # Why recon_loss mean() and KL_loss sum()?
+        # weight, iwae_loss = compute_loss(z, recon_loss.mean(dim=[-1,-2,-3]), solver_args.kl_weight * kl_loss.sum(dim=[-1,-2,-3]), 
+        #                                 encoder, solver_args.sample_method, idx)
+        # Let's use KL mean() not sum()!
+        weight, iwae_loss = compute_loss(z, recon_loss.mean(dim=[-1,-2,-3]), solver_args.kl_weight * kl_loss.mean(dim=[-1,-2,-3]), 
+                                        encoder, solver_args.sample_method, idx)
                                      
     return iwae_loss, recon_loss.mean(dim=1), kl_loss.mean(dim=1), z, weight
 
@@ -305,7 +322,9 @@ def compute_recon_loss(x, z, A):
         x_hat = A(z)
     else:
         x_hat = (z @ A.T)
-    recon_loss = F.mse_loss(x_hat, x, reduction='none').reshape(len(x), x.shape[1], -1)
+    #recon_loss = F.mse_loss(x_hat, x, reduction='none').reshape(len(x), x.shape[1], -1)
+    # Nic: Don't reshape
+    recon_loss = F.mse_loss(x_hat, x, reduction='none')
     return recon_loss
 
 def compute_loss(z, recon_loss, kl_loss, encoder, sample_method="avg", idx=None):

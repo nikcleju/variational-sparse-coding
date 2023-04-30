@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import torch.nn as nn
 
 class MLPEncoder(nn.Module):
@@ -72,6 +73,21 @@ class ConvEncoder(nn.Module):
         z = z.reshape(len(x), -1)
         return self.linear(z)
 
+# Nic
+class ConvEncoder2d(nn.Module):
+
+    def __init__(self, channels_seq, kernel_size=(5,5)):
+        super(ConvEncoder2d, self).__init__()
+
+        self.enc = nn.Sequential()
+        for out_channels in channels_seq:
+            self.enc.append(nn.LazyConv2d(out_channels, kernel_size=kernel_size, stride=(1,1), padding='same'))
+            self.enc.append(nn.BatchNorm2d(out_channels))
+            self.enc.append(nn.ReLU())
+
+    def forward(self, x):
+        return self.enc(x)
+
 class ConvDecoder(nn.Module):
     def __init__(self, num_feat, num_channels, im_size=64):
         super(ConvDecoder, self).__init__()
@@ -127,3 +143,42 @@ class ConvDecoder(nn.Module):
             elif self.im_size == 28:
                 x_hat = self.linear(x).reshape(len(x), -1, 1, 1)
             return self.dec(x_hat)
+
+# Nic
+class ConvDictDecoder(nn.Module):
+
+    def __init__(self, n_channels, out_channels=1, kernel_size=(5,5), stride=(1,1), padding='same'):
+        super(ConvDictDecoder, self).__init__()
+        self.depthconv =  nn.Conv2d(in_channels = n_channels, 
+                            out_channels = n_channels,
+                            kernel_size=kernel_size, 
+                            stride=stride,
+                            groups=n_channels, 
+                            padding=padding, 
+                            bias=False)
+        # No bias ... Explain all
+
+        self.shape = self.depthconv.weight.shape
+
+    def forward(self, x):
+        # x.shape = [1, 5, 32, 512, 512]
+        # y.shape = [1, 5,  1, 512, 512]
+        if len(x.shape) == 5:
+            #y = torch.cat( self.depthconv(x[:,i,:,:,:]).sum(dim=0) for i in range(x.shape[1]))
+            y = torch.stack([self.depthconv(slice.squeeze(dim=1)).sum(dim=1, keepdim=True) for slice in torch.split(x, 1, dim=1)], dim=1)
+        elif len(x.shape) == 4 :
+            y = self.depthconv(x).sum(dim=1, keepdim=True)
+        
+        return y
+        #return self.depthconv(x).sum(dim=0)
+        
+    # def forward_good(self, x):
+    #     # x.shape = [1, 5, 32, 512, 512]
+    #     # y.shape = [1, 5,  1, 512, 512]
+    #     if len(x.shape) == 5:
+    #         #y = torch.cat( self.depthconv(x[:,i,:,:,:]).sum(dim=0) for i in range(x.shape[1]))
+    #         y = torch.stack((self.depthconv(slice.squeeze(dim=1)).sum(dim=1, keepdim=True) for slice in torch.split(x, 1, dim=1)), dim=1)
+    #     elif len(x.shape) == 4 :
+    #         y = self.depthconv(x).sum(dim=1, keepdim=True)
+        
+    #     return y

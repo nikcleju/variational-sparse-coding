@@ -24,13 +24,33 @@ def print_debug(train_args, b_true, b_hat):
         coeff_acc += (b_true.shape[1] - len(missed_support) - len(excess_support)) / b_true.shape[1]
     coeff_acc /= len(b_hat)
 
-    logging.info(f"Mean est coeff near-zero: {total_near_nz.sum(axis=-1).mean():.3f}")
-    logging.info(f"Mean est coeff support: {total_nz.mean():.3f}")
-    logging.info(f"Mean true coeff support: {true_total_nz.mean():.3f}")
-    logging.info(f"Mean est coeff magnitude: {mean_coeff}")
-    logging.info(f"Mean true coeff magnitude: {true_coeff}")
-    logging.info("L1 distance with true coeff: {:.3E}".format(np.abs(b_hat - b_true).sum()))
-    logging.info("Coeff support accuracy: {:.2f}%".format(100.*coeff_acc))
+
+    # Convolutional:  total_near_nz.shape = (100, 6, 16, 16)
+    if len(total_near_nz.shape) == 4:
+        patch_axes = (-1,-2)      # last two dimensions are the patch dimensions, e.g. 16 x 16
+        b_hat_axes = (-1,-2, -3)  # last three dimensions are the patch dimensions, e.g. 6 x 16 x 16
+
+        # Support with coefficients larger than 1e-6 (e.g. sum for all 100 x 6 images and mean, compared to 16x16)
+        logging.info(f"Mean est coeff not near-zero per image: {total_near_nz.sum(axis=patch_axes).mean():.6f} / {np.prod([total_near_nz.shape[i] for i in patch_axes]):.6f}")
+        
+        # Support with all non-zero coefficients, even those very small
+        # Sum also over -3 axis, because total_nz was summed over axis=1 in the first place
+        logging.info(f"Mean est coeff support per image: {total_nz.sum(axis=b_hat_axes).mean():.6f} / {np.prod([total_nz.shape[i] for i in patch_axes]):.6f}")
+        
+        #logging.info(f"Mean true coeff support: {true_total_nz.mean():.3f}")
+        logging.info(f"Mean est coeff magnitude: {mean_coeff}")
+        #logging.info(f"Mean true coeff magnitude: {true_coeff}")
+        #logging.info("L1 distance with true coeff: {:.3E}".format(np.abs(b_hat - b_true).sum()))
+        #logging.info("Coeff support accuracy: {:.2f}%".format(100.*coeff_acc))
+
+    elif len(total_near_nz.shape) == 3:
+        logging.info(f"Mean est coeff near-zero: {total_near_nz.sum(axis=-1).mean():.6f}")     
+        logging.info(f"Mean est coeff support: {total_nz.mean():.6f}")                         
+        logging.info(f"Mean true coeff support: {true_total_nz.mean():.6f}")
+        logging.info(f"Mean est coeff magnitude: {mean_coeff}")
+        logging.info(f"Mean true coeff magnitude: {true_coeff}")
+        logging.info("L1 distance with true coeff: {:.6E}".format(np.abs(b_hat - b_true).sum()))
+        logging.info("Coeff support accuracy: {:.2f}%".format(100.*coeff_acc))
 
 def build_coreset(solver_args, encoder, train_patches, default_device):
     mbed_file = np.load(solver_args.coreset_embed_path)
@@ -53,7 +73,7 @@ def build_coreset(solver_args, encoder, train_patches, default_device):
         raise NotImplementedError
     logging.info(f"...core-set succesfully built.")
 
-def dict_add_defaults(train_args, solver_args, date_path=True):
+def params_add_defaults(train_args, solver_args, date_path=True):
     """Utility function to add new parameters with default values
        for train_args and save_args, in case of newly added parameters
     """
@@ -67,7 +87,10 @@ def dict_add_defaults(train_args, solver_args, date_path=True):
         setattr(solver_args, 'ISTA_c_prior_size', 1)
     if not hasattr(train_args, 'update_dict_every_step'):
         setattr(train_args, 'update_dict_every_step', False)
-        
+    if not hasattr(train_args, 'kernel_size'):
+        setattr(train_args, 'kernel_size', 5)
+    if not hasattr(train_args, 'is2D'):
+        setattr(train_args, 'is2D', False)        
 
     # Prepend current date and time to savepath
     if date_path:

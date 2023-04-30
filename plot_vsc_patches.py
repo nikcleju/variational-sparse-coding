@@ -107,24 +107,26 @@ def compute_statistics(run_path, train_args, solver_args):
         coeff_collapse=coeff_collapse, multi_info=multi_info, 
         load_list=load_list, ecovered_dict=recovered_dict)
 
-def compute_statistics_conv(run_path, train_args, solver_args):
-    #solver_args.sample_method = "max"
-    #solver_args.num_samples = 1
 
+def plot_patches_conv(run_path, train_args, solver_args):
+
+    # Load final dict
     final_phi = np.load(train_args.save_path + 'train_savefile.npz')['phi'][train_args.epochs - 1]
-    _, val_patches = load_whitened_images(train_args, final_phi)
-    #val_patches = val_patches.reshape(-1, train_args.patch_size**2)  # Don't reshape
-
     dict_size, _, patch_size1, patch_size2 = final_phi.shape
 
+    # Load patches, don't reshape them
+    _, val_patches = load_whitened_images(train_args, final_phi)
+  
     default_device = torch.device('cuda', train_args.device)
-    
+
+    # Determine saved iterations    
     if solver_args.solver != 'FISTA':
         load_list = [int(re.search(r'encoderstate_epoch([0-9].*).pt', f)[1]) for f in os.listdir(run_path) if re.search(r'encoderstate_epoch([0-9].*).pt', f)]
         load_list = np.sort(load_list)
     else:
         load_list = np.arange(0, 301, 20)
 
+    # Initialize
     multi_info = np.zeros(len(load_list))
     posterior_collapse = np.zeros(len(load_list))
     coeff_collapse = np.zeros(len(load_list))
@@ -227,24 +229,27 @@ def compute_statistics_conv(run_path, train_args, solver_args):
 
 
 if __name__ == "__main__":
+
     # Load arguments for training via config file input to CLI #
-    parser = argparse.ArgumentParser(description='Compute VSC Statistics')
-    parser.add_argument('-r', '--run', type=str, required=True,
-                        help='Path to run file to compute statistics for.')
+    parser = argparse.ArgumentParser(description='Plot VSC patches')
+    parser.add_argument('-r', '--run', type=str, required=True, help='Path to run file to compute statistics for.')
     args = parser.parse_args()
+
+    # Read config from save location
     with open(args.run + "/config.json") as json_data:
         config_data = json.load(json_data)
-    train_args = SimpleNamespace(**config_data['train'])
+    train_args  = SimpleNamespace(**config_data['train'])
     solver_args = SimpleNamespace(**config_data['solver'])
 
-    # Nic
+    # Fix
     params_add_defaults(train_args, solver_args)
     train_args.save_path = args.run + '/'
 
-    logging.basicConfig(filename=os.path.join(train_args.save_path, 'statistics.log'), 
-                        filemode='w', level=logging.DEBUG)
-    
+    # Start logging
+    logging.basicConfig(filename=os.path.join(train_args.save_path, 'plots.log'), filemode='w', level=logging.DEBUG)
+
+    # Run    
     if solver_args.feature_enc == 'CONV2D':
-        compute_statistics_conv(args.run, train_args, solver_args)
+        plot_patches_conv(args.run, train_args, solver_args)
     else:
         compute_statistics(args.run, train_args, solver_args)
