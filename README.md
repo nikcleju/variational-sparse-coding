@@ -1,3 +1,12 @@
+# Variational *Convolutional* Sparse Coding
+
+**Note:** Changes for implementing the convolutional variant of Variational Sparse Coding, using convolutional sparse coding instead of normal sparse coding, are on the [`dev` branch](https://github.com/nikcleju/variational-sparse-coding/tree/dev)
+
+
+
+
+# Original README follows:
+
 # Variational Sparse Coding
 
 <p align="center">
